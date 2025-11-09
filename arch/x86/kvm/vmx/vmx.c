@@ -76,6 +76,45 @@
 
 #include "mmu/spte.h"
 
+
+#include <linux/atomic.h>
+
+#define CMPE283_EXIT_DUMP_PERIOD 10000
+#define CMPE283_MAX_EXIT_REASONS 256
+
+static atomic64_t cmpe283_total_exits;
+static atomic64_t cmpe283_exit_counts[CMPE283_MAX_EXIT_REASONS];
+
+static const char * const cmpe283_vmx_exit_names[CMPE283_MAX_EXIT_REASONS] = {
+    [0]  = "EXCEPTION_NMI",
+    [1]  = "EXTERNAL_INTERRUPT",
+    [10] = "CPUID",
+    [12] = "HLT",
+    [30] = "IO_INSTRUCTION",
+    [48] = "EPT_VIOLATION",
+    [49] = "EPT_MISCONFIG",
+    /* add more if you want; unknowns will print numeric only */
+};
+
+static void cmpe283_maybe_dump_exits(void)
+{
+    u64 total = atomic64_read(&cmpe283_total_exits);
+    if (!total || (total % CMPE283_EXIT_DUMP_PERIOD))
+        return;
+
+    pr_info("CMPE283: total VM-exits since boot: %llu\n", total);
+    for (int i = 0; i < CMPE283_MAX_EXIT_REASONS; i++) {
+        u64 c = atomic64_read(&cmpe283_exit_counts[i]);
+        if (!c) continue;
+        if (cmpe283_vmx_exit_names[i])
+            pr_info("CMPE283: exit %d (%s): %llu\n", i, cmpe283_vmx_exit_names[i], c);
+        else
+            pr_info("CMPE283: exit %d: %llu\n", i, c);
+    }
+}
+
+
+
 MODULE_AUTHOR("Qumranet");
 MODULE_DESCRIPTION("KVM support for VMX (Intel VT-x) extensions");
 MODULE_LICENSE("GPL");
@@ -6478,6 +6517,16 @@ static int __vmx_handle_exit(struct kvm_vcpu *vcpu, fastpath_t exit_fastpath)
 	union vmx_exit_reason exit_reason = vmx_get_exit_reason(vcpu);
 	u32 vectoring_info = vmx->idt_vectoring_info;
 	u16 exit_handler_index;
+
+{
+        /* For clarity, pull out the basic reason from the union */
+        u32 reason = exit_reason.basic;
+
+        if (reason < CMPE283_MAX_EXIT_REASONS)
+                atomic64_inc(&cmpe283_exit_counts[reason]);
+        atomic64_inc(&cmpe283_total_exits);
+        cmpe283_maybe_dump_exits();
+}
 
 	/*
 	 * Flush logged GPAs PML buffer, this will make dirty_bitmap more
